@@ -7,6 +7,8 @@
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:12px}
   button{margin-right:6px;margin-top:6px}
   pre{white-space:pre-wrap;background:#f6f6f8;padding:8px;border-radius:6px}
+  #mapwrap{margin-top:12px}
+  #map{width:100%;height:320px;border:1px solid #ddd;border-radius:6px;background:#fafafa}
 </style>
 </head>
 <body>
@@ -19,6 +21,10 @@
 <button id="clear" >Clear DB</button>
 <pre id="status">idle</pre>
 
+<div id="mapwrap">
+  <canvas id="map" aria-label="Live RTT-coloured route"></canvas>
+</div>
+
 <script>
 // --- CONFIG ---
 const DB_NAME = 'route_coverage_db_v1';
@@ -29,6 +35,8 @@ const GPS_SILENCE_THRESHOLD_MS = 15000; // if no GPS for this long => write susp
 const TIMER_INTERVAL_MS = 5000;     // main heartbeat interval
 const TIMER_DRIFT_THRESHOLD_MS = 1000 + TIMER_INTERVAL_MS; // gap over this => suspend_gap
 const BATCH_FLUSH_MS = 5000;        // flush batch to IDB every N ms
+const RTT_REF_MIN_MS = 50;          // baseline lower bound for color scaling
+const RTT_REF_MAX_MS = 1500;        // baseline upper bound for color scaling
 // ----------------
 
 // --- IndexedDB wrapper ---
@@ -95,6 +103,9 @@ let watchId = null;
 let timer = null;
 let batch = [];
 let lastFlush = Date.now();
+const mapPoints = [];
+const mapCanvas = document.getElementById('map');
+const mapCtx = mapCanvas.getContext('2d');
 
 // helper to push sample to batch
 function pushSample(obj){
@@ -272,6 +283,7 @@ async function tick(){
         r.lon = latestPos.coords.longitude;
       }
       pushSample(r);
+      recordMapPoint(r);
     }
   }
   // check for gaps (GPS silence + timer drift)
@@ -297,6 +309,103 @@ function recordConnectivity(state){
     rec.downlink_mbps = navigator.connection.downlink;
   }
   pushSample(rec);
+}
+
+function rttBounds(){
+  if(mapPoints.length === 0) return [RTT_REF_MIN_MS, RTT_REF_MAX_MS];
+  let mn = Infinity;
+  let mx = -Infinity;
+  for(const p of mapPoints){
+    if(p.rtt_ms==null || isNaN(p.rtt_ms)) continue;
+    mn = Math.min(mn, p.rtt_ms);
+    mx = Math.max(mx, p.rtt_ms);
+  }
+  if(!isFinite(mn)) mn = RTT_REF_MIN_MS;
+  if(!isFinite(mx)) mx = RTT_REF_MAX_MS;
+  mn = Math.min(mn, RTT_REF_MIN_MS);
+  mx = Math.max(mx, RTT_REF_MAX_MS);
+  if(mx === mn) mx = mn + 1;
+  return [mn, mx];
+}
+
+function rttToColor(rtt, bounds){
+  if(rtt==null || isNaN(rtt)) return '#666';
+  const [mn, mx] = bounds || rttBounds();
+  const t = Math.max(0, Math.min(1, (rtt - mn) / (mx - mn)));
+  const hue = 120 * (1 - t); // green -> red as RTT increases
+  return `hsl(${hue}, 85%, 45%)`;
+}
+
+function latLonBounds(){
+  if(mapPoints.length === 0) return null;
+  let minLat = Infinity, maxLat = -Infinity, minLon = Infinity, maxLon = -Infinity;
+  for(const p of mapPoints){
+    minLat = Math.min(minLat, p.lat);
+    maxLat = Math.max(maxLat, p.lat);
+    minLon = Math.min(minLon, p.lon);
+    maxLon = Math.max(maxLon, p.lon);
+  }
+  const spanLat = Math.max(maxLat - minLat, 1e-6);
+  const spanLon = Math.max(maxLon - minLon, 1e-6);
+  return { minLat, maxLat, minLon, maxLon, spanLat, spanLon };
+}
+
+function drawMap(){
+  if(!mapCanvas || !mapCtx) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cw = mapCanvas.clientWidth || mapCanvas.width;
+  const ch = mapCanvas.clientHeight || mapCanvas.height || 320;
+  mapCanvas.width = cw * dpr;
+  mapCanvas.height = ch * dpr;
+  mapCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  mapCtx.clearRect(0, 0, cw, ch);
+  if(mapPoints.length === 0) return;
+
+  const pad = 12;
+  const usableW = Math.max(cw - pad * 2, 10);
+  const usableH = Math.max(ch - pad * 2, 10);
+  const bounds = latLonBounds();
+  if(!bounds) return;
+  const rttScale = rttBounds();
+
+  const project = p => {
+    const xRatio = (p.lon - bounds.minLon) / bounds.spanLon;
+    const yRatio = (p.lat - bounds.minLat) / bounds.spanLat;
+    return {
+      x: pad + xRatio * usableW,
+      y: pad + (1 - yRatio) * usableH
+    };
+  };
+
+  mapCtx.lineWidth = 3;
+  mapCtx.lineJoin = 'round';
+  mapCtx.lineCap = 'round';
+
+  for(let i=1;i<mapPoints.length;i++){
+    const a = mapPoints[i-1];
+    const b = mapPoints[i];
+    const pa = project(a);
+    const pb = project(b);
+    mapCtx.strokeStyle = rttToColor(b.rtt_ms, rttScale);
+    mapCtx.beginPath();
+    mapCtx.moveTo(pa.x, pa.y);
+    mapCtx.lineTo(pb.x, pb.y);
+    mapCtx.stroke();
+  }
+
+  const last = mapPoints[mapPoints.length-1];
+  const pl = project(last);
+  mapCtx.fillStyle = rttToColor(last.rtt_ms, rttScale);
+  mapCtx.beginPath();
+  mapCtx.arc(pl.x, pl.y, 4, 0, Math.PI*2);
+  mapCtx.fill();
+}
+
+function recordMapPoint(sample){
+  if(!sample || sample.type !== 'ping') return;
+  if(typeof sample.lat !== 'number' || typeof sample.lon !== 'number') return;
+  mapPoints.push({ lat: sample.lat, lon: sample.lon, rtt_ms: sample.rtt_ms });
+  drawMap();
 }
 
 // --- start/stop controls ---
@@ -383,6 +492,10 @@ window.addEventListener('offline', () => {
 window.addEventListener('pagehide', async () => {
   await flushIfNeeded(true);
 });
+
+// redraw map on resize
+window.addEventListener('resize', drawMap);
+drawMap();
 
 // end of script
 </script>
