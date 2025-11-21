@@ -21,6 +21,7 @@
 <button id="stop" disabled>Stop</button>
 <button id="export" disabled>Export JSON</button>
 <button id="clear" >Clear DB</button>
+<label style="margin-left:8px;font-size:13px">Interval ms <input id="sample-rate" type="number" min="1000" step="500" value="5000" style="width:90px"></label>
 <pre id="status">idle</pre>
 
 <div id="mapwrap">
@@ -39,8 +40,7 @@ const STORE = 'samples';
 const PING_URL = './ping.txt'; // same-origin tiny asset for latency checks
 const GPS_MIN_INTERVAL_MS = 1000;   // how often we expect GPS callbacks (approx)
 const GPS_SILENCE_THRESHOLD_MS = 15000; // if no GPS for this long => write suspend_gap
-const TIMER_INTERVAL_MS = 5000;     // main heartbeat interval
-const TIMER_DRIFT_THRESHOLD_MS = 1000 + TIMER_INTERVAL_MS; // gap over this => suspend_gap
+const DEFAULT_TIMER_INTERVAL_MS = 5000; // default main heartbeat interval
 const BATCH_FLUSH_MS = 5000;        // flush batch to IDB every N ms
 const RTT_REF_MIN_MS = 50;          // baseline lower bound for color scaling
 const RTT_REF_MAX_MS = 1500;        // baseline upper bound for color scaling
@@ -112,6 +112,7 @@ let watchId = null;
 let timer = null;
 let batch = [];
 let lastFlush = Date.now();
+let timerIntervalMs = DEFAULT_TIMER_INTERVAL_MS;
 const mapPoints = [];
 const mapCanvas = document.getElementById('map');
 const mapCtx = mapCanvas.getContext('2d');
@@ -252,13 +253,13 @@ function checkForGaps(){
   const nowPerf = performance.now();
   const gapPerf = nowPerf - lastTickPerf;
   lastTickPerf = nowPerf;
-  if(gapPerf > TIMER_DRIFT_THRESHOLD_MS) {
+  if(gapPerf > timerDriftThresholdMs()) {
     const gapRec = {
       type: 'suspend_gap',
       method: 'timer_drift',
       detected_at: new Date().toISOString(),
       gap_ms: Math.round(gapPerf),
-      note: `Timer gap of ${Math.round(gapPerf)} ms (expected ${TIMER_INTERVAL_MS} ms)`
+      note: `Timer gap of ${Math.round(gapPerf)} ms (expected ${timerIntervalMs} ms)`
     };
     pushSample(gapRec);
     status(`Timer drift gap detected ${Math.round(gapPerf/1000)}s`);
@@ -267,13 +268,13 @@ function checkForGaps(){
   // 3) Wall-clock drift (helps if performance.now() is frozen during suspend)
   const gapWall = now - lastTickWall;
   lastTickWall = now;
-  if(gapWall > TIMER_DRIFT_THRESHOLD_MS) {
+  if(gapWall > timerDriftThresholdMs()) {
     const gapRec = {
       type: 'suspend_gap',
       method: 'wall_clock',
       detected_at: new Date().toISOString(),
       gap_ms: gapWall,
-      note: `Wall clock gap of ${gapWall} ms (expected ${TIMER_INTERVAL_MS} ms)`
+      note: `Wall clock gap of ${gapWall} ms (expected ${timerIntervalMs} ms)`
     };
     pushSample(gapRec);
     status(`Wall clock gap detected ${Math.round(gapWall/1000)}s`);
@@ -320,6 +321,10 @@ function recordConnectivity(state){
     rec.downlink_mbps = navigator.connection.downlink;
   }
   pushSample(rec);
+}
+
+function timerDriftThresholdMs(){
+  return 1000 + timerIntervalMs;
 }
 
 function rttBounds(){
@@ -473,7 +478,7 @@ document.getElementById('start').addEventListener('click', async ()=>{
   startGPS();
   // immediate tick then interval
   tick();
-  timer = setInterval(tick, TIMER_INTERVAL_MS);
+  timer = setInterval(tick, timerIntervalMs);
   status('Running — logging');
 });
 
@@ -542,11 +547,24 @@ window.addEventListener('pagehide', async () => {
   await flushIfNeeded(true);
 });
 
+function setSampleInterval(ms){
+  const value = Math.max(1000, Math.round(Number(ms) || DEFAULT_TIMER_INTERVAL_MS));
+  timerIntervalMs = value;
+  document.getElementById('sample-rate').value = value;
+  if(timer){
+    clearInterval(timer);
+    timer = setInterval(tick, timerIntervalMs);
+  }
+  status(`Sample interval set to ${value} ms`);
+}
+
 // redraw map on resize
 window.addEventListener('resize', drawMap);
 drawMap();
 setInterval(updateReadouts, 1000);
 updateReadouts();
+
+document.getElementById('sample-rate').addEventListener('change', e => setSampleInterval(e.target.value));
 
 // end of script
 </script>
