@@ -1,0 +1,390 @@
+<!doctype html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Route Coverage Logger (GPS-silence detection)</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:12px}
+  button{margin-right:6px;margin-top:6px}
+  pre{white-space:pre-wrap;background:#f6f6f8;padding:8px;border-radius:6px}
+</style>
+</head>
+<body>
+<h3>Route Coverage Logger</h3>
+<p>Records GPS samples to IndexedDB. Detects gaps (GPS silence / timer drift) and writes <code>suspend_gap</code> records.</p>
+
+<button id="start">Start</button>
+<button id="stop" disabled>Stop</button>
+<button id="export" disabled>Export JSON</button>
+<button id="clear" >Clear DB</button>
+<pre id="status">idle</pre>
+
+<script>
+// --- CONFIG ---
+const DB_NAME = 'route_coverage_db_v1';
+const STORE = 'samples';
+const PING_URL = './ping.txt'; // same-origin tiny asset for latency checks
+const GPS_MIN_INTERVAL_MS = 1000;   // how often we expect GPS callbacks (approx)
+const GPS_SILENCE_THRESHOLD_MS = 15000; // if no GPS for this long => write suspend_gap
+const TIMER_INTERVAL_MS = 5000;     // main heartbeat interval
+const TIMER_DRIFT_THRESHOLD_MS = 1000 + TIMER_INTERVAL_MS; // gap over this => suspend_gap
+const BATCH_FLUSH_MS = 5000;        // flush batch to IDB every N ms
+// ----------------
+
+// --- IndexedDB wrapper ---
+function openDB(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = e => {
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains(STORE)) {
+        db.createObjectStore(STORE, { keyPath: 'id', autoIncrement: true });
+      }
+    };
+    r.onsuccess = e => res(e.target.result);
+    r.onerror = e => rej(e.target.error);
+  });
+}
+
+async function addItems(items){
+  if(!items || items.length===0) return;
+  const db = await openDB();
+  const tx = db.transaction(STORE, 'readwrite');
+  const s = tx.objectStore(STORE);
+  for(const it of items) s.add(it);
+  return new Promise((res, rej)=>{
+    tx.oncomplete = () => res();
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+
+async function exportAll(){
+  const db = await openDB();
+  const tx = db.transaction(STORE,'readonly');
+  const s = tx.objectStore(STORE);
+  const all = [];
+  return new Promise((res, rej) => {
+    s.openCursor().onsuccess = e => {
+      const c = e.target.result;
+      if(!c) return res(all);
+      all.push(c.value);
+      c.continue();
+    };
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+
+async function clearDB(){
+  const db = await openDB();
+  const tx = db.transaction(STORE,'readwrite');
+  const s = tx.objectStore(STORE);
+  s.clear();
+  return new Promise((res, rej) => {
+    tx.oncomplete = () => res();
+    tx.onerror = e => rej(e.target.error);
+  });
+}
+
+// --- state & batch buffer ---
+let latestPos = null;
+let lastGpsTs = 0;       // Date.now() when last GPS callback arrived
+let lastTickPerf = performance.now();
+let lastTickWall = Date.now();
+let running = false;
+let watchId = null;
+let timer = null;
+let batch = [];
+let lastFlush = Date.now();
+
+// helper to push sample to batch
+function pushSample(obj){
+  obj.created_at = new Date().toISOString();
+  batch.push(obj);
+  // enable export button
+  document.getElementById('export').disabled = false;
+}
+
+// flush batch periodically
+async function flushIfNeeded(force=false){
+  const now = Date.now();
+  if(batch.length === 0) return;
+  if(force || now - lastFlush >= BATCH_FLUSH_MS) {
+    const toWrite = batch.splice(0, batch.length);
+    try {
+      await addItems(toWrite);
+      lastFlush = Date.now();
+      status(`Flushed ${toWrite.length} samples`);
+    } catch(e){
+      console.error('DB write error', e);
+      status('DB write error: ' + e);
+    }
+  }
+}
+
+// --- GPS handling (method 3) ---
+function startGPS(){
+  if(!('geolocation' in navigator)) {
+    status('Geolocation not supported');
+    return;
+  }
+  // prefer high accuracy for route mapping
+  watchId = navigator.geolocation.watchPosition(
+    p => {
+      latestPos = p;
+      lastGpsTs = Date.now();
+      // sample object
+      const s = {
+        type: 'gps',
+        ts: new Date().toISOString(),
+        lat: p.coords.latitude,
+        lon: p.coords.longitude,
+        accuracy_m: p.coords.accuracy,
+        altitude_m: p.coords.altitude,
+        speed_m_s: p.coords.speed,
+        heading_deg: p.coords.heading
+      };
+      pushSample(s);
+      // flush if necessary
+      flushIfNeeded();
+    },
+    err => {
+      console.warn('geo error', err);
+      pushSample({ type:'gps_error', ts:new Date().toISOString(), error: String(err.code) + ':' + err.message });
+    },
+    { enableHighAccuracy: true, maximumAge: 2000, timeout: 10000 }
+  );
+  status('GPS started');
+}
+
+function stopGPS(){
+  if(watchId!=null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  latestPos = null;
+  status('GPS stopped');
+}
+
+// --- Optional ping (simple RTT) ---
+async function pingOnce(){
+  if(!PING_URL) return null;
+  const t0 = performance.now();
+  const t0ws = Date.now();
+  const cacheBust = `${PING_URL}${PING_URL.includes('?') ? '&' : '?'}_cb=${Math.random()*1e9|0}`;
+  try {
+    const r = await fetch(cacheBust, {method:'GET', cache:'no-store'});
+    const t1 = performance.now();
+    const rec = {
+      type: 'ping',
+      ok: r.ok,
+      status: r.status,
+      rtt_ms: Math.round(t1 - t0),
+      ts: new Date(t0ws).toISOString()
+    };
+    if(navigator.connection) {
+      rec.effective_type = navigator.connection.effectiveType;
+      rec.downlink_mbps = navigator.connection.downlink;
+    }
+    return rec;
+  } catch(e){
+    const t1 = performance.now();
+    const rec = {
+      type: 'ping',
+      ok: false,
+      status: null,
+      rtt_ms: Math.round(t1 - t0),
+      ts: new Date(t0ws).toISOString(),
+      err: String(e)
+    };
+    if(navigator.connection) {
+      rec.effective_type = navigator.connection.effectiveType;
+      rec.downlink_mbps = navigator.connection.downlink;
+    }
+    return rec;
+  }
+}
+
+// --- suspension detection logic ---
+// method 3: detect GPS silence
+function checkForGaps(){
+  const now = Date.now();
+  // 1) GPS silence detection (method 3)
+  const gpsGap = now - lastGpsTs;
+  if(lastGpsTs > 0 && gpsGap > GPS_SILENCE_THRESHOLD_MS) {
+    // write a suspend_gap record
+    const gapRec = {
+      type: 'suspend_gap',
+      method: 'gps_silence',
+      detected_at: new Date().toISOString(),
+      gap_ms: gpsGap,
+      last_gps_at: new Date(lastGpsTs).toISOString(),
+      approx_resume_noted: null,
+      note: `No GPS callback for ${gpsGap} ms`
+    };
+    pushSample(gapRec);
+    status(`GPS silence gap detected ${Math.round(gpsGap/1000)}s`);
+    // after logging once, reset lastGpsTs to now so we don't spam
+    lastGpsTs = now;
+  }
+
+  // 2) Timer drift detection (secondary)
+  const nowPerf = performance.now();
+  const gapPerf = nowPerf - lastTickPerf;
+  lastTickPerf = nowPerf;
+  if(gapPerf > TIMER_DRIFT_THRESHOLD_MS) {
+    const gapRec = {
+      type: 'suspend_gap',
+      method: 'timer_drift',
+      detected_at: new Date().toISOString(),
+      gap_ms: Math.round(gapPerf),
+      note: `Timer gap of ${Math.round(gapPerf)} ms (expected ${TIMER_INTERVAL_MS} ms)`
+    };
+    pushSample(gapRec);
+    status(`Timer drift gap detected ${Math.round(gapPerf/1000)}s`);
+  }
+
+  // 3) Wall-clock drift (helps if performance.now() is frozen during suspend)
+  const gapWall = now - lastTickWall;
+  lastTickWall = now;
+  if(gapWall > TIMER_DRIFT_THRESHOLD_MS) {
+    const gapRec = {
+      type: 'suspend_gap',
+      method: 'wall_clock',
+      detected_at: new Date().toISOString(),
+      gap_ms: gapWall,
+      note: `Wall clock gap of ${gapWall} ms (expected ${TIMER_INTERVAL_MS} ms)`
+    };
+    pushSample(gapRec);
+    status(`Wall clock gap detected ${Math.round(gapWall/1000)}s`);
+  }
+}
+
+// --- heartbeat tick ---
+async function tick(){
+  if(!running) return;
+  // optional ping
+  if(PING_URL) {
+    const r = await pingOnce();
+    if(r){
+      // attach last known GPS if any
+      if(latestPos) {
+        r.lat = latestPos.coords.latitude;
+        r.lon = latestPos.coords.longitude;
+      }
+      pushSample(r);
+    }
+  }
+  // check for gaps (GPS silence + timer drift)
+  checkForGaps();
+  // flush small batches occasionally
+  await flushIfNeeded();
+}
+
+// --- UI helpers ---
+function status(s){
+  document.getElementById('status').textContent = s;
+}
+
+function recordConnectivity(state){
+  const rec = {
+    type: 'connectivity',
+    ts: new Date().toISOString(),
+    state,
+    navigator_online: navigator.onLine
+  };
+  if(navigator.connection) {
+    rec.effective_type = navigator.connection.effectiveType;
+    rec.downlink_mbps = navigator.connection.downlink;
+  }
+  pushSample(rec);
+}
+
+// --- start/stop controls ---
+document.getElementById('start').addEventListener('click', async ()=>{
+  if(running) return;
+  running = true;
+  document.getElementById('start').disabled = true;
+  document.getElementById('stop').disabled = false;
+  document.getElementById('export').disabled = true;
+  // reset markers
+  lastGpsTs = 0;
+  lastTickPerf = performance.now();
+  lastTickWall = Date.now();
+  recordConnectivity(navigator.onLine ? 'online' : 'offline');
+  // start gps & heartbeat
+  startGPS();
+  // immediate tick then interval
+  tick();
+  timer = setInterval(tick, TIMER_INTERVAL_MS);
+  status('Running — logging');
+});
+
+document.getElementById('stop').addEventListener('click', async ()=>{
+  if(!running) return;
+  running = false;
+  document.getElementById('start').disabled = false;
+  document.getElementById('stop').disabled = true;
+  clearInterval(timer);
+  timer = null;
+  stopGPS();
+  // final flush
+  await flushIfNeeded(true);
+  // write a stop marker
+  pushSample({ type:'session_stop', ts:new Date().toISOString() });
+  await flushIfNeeded(true);
+  status('Stopped and flushed');
+});
+
+document.getElementById('export').addEventListener('click', async ()=>{
+  try {
+    await flushIfNeeded(true);
+    const all = await exportAll();
+    const blob = new Blob([JSON.stringify(all,null,2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'route_coverage_export.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    status(`Exported ${all.length} records`);
+  } catch(e){
+    status('Export error: ' + e);
+  }
+});
+
+document.getElementById('clear').addEventListener('click', async ()=>{
+  if(!confirm('Clear all stored samples?')) return;
+  await clearDB();
+  document.getElementById('export').disabled = true;
+  status('DB cleared');
+});
+
+// --- visibility hint: mark page hidden/visible ---
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden) {
+    pushSample({ type:'visibility', ts:new Date().toISOString(), state:'hidden' });
+    flushIfNeeded(true);
+  } else {
+    pushSample({ type:'visibility', ts:new Date().toISOString(), state:'visible' });
+  }
+});
+
+// --- online/offline markers ---
+window.addEventListener('online', () => {
+  recordConnectivity('online');
+  flushIfNeeded(true);
+});
+
+window.addEventListener('offline', () => {
+  recordConnectivity('offline');
+  flushIfNeeded(true);
+});
+
+// ensure flush on page unload
+window.addEventListener('pagehide', async () => {
+  await flushIfNeeded(true);
+});
+
+// end of script
+</script>
+</body>
+</html>
