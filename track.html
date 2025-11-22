@@ -21,8 +21,11 @@
 <button id="stop" disabled>Stop</button>
 <button id="export" disabled>Export JSON</button>
 <button id="clear" >Clear DB</button>
+<button id="reset">Reset view</button>
 <label style="margin-left:8px;font-size:13px">Interval ms <input id="sample-rate" type="number" min="1000" step="500" value="5000" style="width:90px"></label>
 <pre id="status">idle</pre>
+
+<div id="resume-indicator" style="font-size:13px;color:#555;margin-bottom:4px">No prior session loaded</div>
 
 <div id="mapwrap">
   <canvas id="map" aria-label="Live RTT-coloured route"></canvas>
@@ -558,6 +561,53 @@ function setSampleInterval(ms){
   status(`Sample interval set to ${value} ms`);
 }
 
+function setResumeIndicator(ts){
+  const el = document.getElementById('resume-indicator');
+  if(!el) return;
+  const label = ts ? `Resumed data (${fmtAgo(ts)})` : 'No prior session loaded';
+  el.textContent = label;
+}
+
+async function restoreFromDB(){
+  try {
+    const all = await exportAll();
+    if(!all || all.length === 0) {
+      setResumeIndicator(null);
+      return;
+    }
+    mapPoints.length = 0;
+    let lastPing = null;
+    let lastGps = null;
+    for(const rec of all){
+      if(rec.type === 'ping' && typeof rec.lat === 'number' && typeof rec.lon === 'number') {
+        mapPoints.push({ lat: rec.lat, lon: rec.lon, rtt_ms: rec.rtt_ms });
+        lastPing = rec;
+      }
+      if(rec.type === 'gps') lastGps = rec;
+    }
+    latestPingSample = lastPing;
+    latestGpsSample = lastGps;
+    drawMap();
+    updateReadouts();
+    const ts = (lastPing && lastPing.ts) || (lastGps && lastGps.ts) || null;
+    setResumeIndicator(ts);
+    status(`Restored ${mapPoints.length} points from DB`);
+  } catch(e){
+    console.error('restore error', e);
+    status('Restore failed: ' + e);
+  }
+}
+
+function resetView(){
+  mapPoints.length = 0;
+  latestPingSample = null;
+  latestGpsSample = null;
+  drawMap();
+  updateReadouts();
+  setResumeIndicator(null);
+  status('View reset');
+}
+
 // redraw map on resize
 window.addEventListener('resize', drawMap);
 drawMap();
@@ -565,6 +615,8 @@ setInterval(updateReadouts, 1000);
 updateReadouts();
 
 document.getElementById('sample-rate').addEventListener('change', e => setSampleInterval(e.target.value));
+document.getElementById('reset').addEventListener('click', resetView);
+restoreFromDB();
 
 // end of script
 </script>
