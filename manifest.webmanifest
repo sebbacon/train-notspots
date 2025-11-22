@@ -1,0 +1,16 @@
+{
+  "name": "Route Coverage Logger",
+  "short_name": "Coverage",
+  "start_url": "./track.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f6cbd",
+  "theme_color": "#0f6cbd",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}
