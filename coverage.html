@@ -167,8 +167,6 @@
       const statsEl = document.getElementById('stats');
       const reloadBtn = document.getElementById('reload');
       const padding = { top: 28, right: 18, bottom: 58, left: 60 };
-      // Use emoji with variation selector so canvas renders a colour glyph instead of monochrome fallback.
-      const trainIcon = '🚆\uFE0F';
       let samples = [];
       let gpsSamples = [];
       let meta = null;
@@ -432,6 +430,39 @@
         return colourFor((a + b) / 2, clip);
       }
 
+      function drawTrainIcon(ctx, x, y){
+        // Simple, deterministic train glyph to avoid platform emoji differences.
+        const w = 26;
+        const h = 12;
+        const left = x - w / 2;
+        const top = y - h;
+        ctx.save();
+        ctx.fillStyle = '#1f5fbf';
+        ctx.strokeStyle = '#0f3b8a';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(left, top, w, h, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        // Windows
+        ctx.fillStyle = '#e8f4ff';
+        ctx.fillRect(left + 4, top + 3, 7, 6);
+        ctx.fillRect(left + 14, top + 3, 7, 6);
+
+        // Headlight
+        ctx.fillStyle = '#f2d654';
+        ctx.fillRect(left + w - 4, top + 5, 3, 4);
+
+        // Wheels
+        ctx.fillStyle = '#111';
+        ctx.beginPath();
+        ctx.arc(left + 6, y + 2, 3, 0, Math.PI * 2);
+        ctx.arc(left + w - 6, y + 2, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+
       function resizeCanvas(){
         const rect = chart.getBoundingClientRect();
         const width = rect.width || 800;
@@ -555,13 +586,12 @@
         // Current location marker (last GPS point)
         if (currentPoint){
           const x = mapX(currentPoint.ts);
-          ctx.font = '22px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","sans-serif"';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(trainIcon, x, baseY - 20);
+          drawTrainIcon(ctx, x, baseY - 16);
           ctx.font = '12px "Segoe UI", "Helvetica Neue", system-ui';
           ctx.fillStyle = '#111';
-          ctx.fillText('current', x, baseY - 34);
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'alphabetic';
+          ctx.fillText('current', x, baseY - 30);
           ctx.textAlign = 'start';
           ctx.textBaseline = 'alphabetic';
         }
