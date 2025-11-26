@@ -1,0 +1,631 @@
+<!doctype html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Route Coverage Playback</title>
+  <style>
+    :root {
+      color-scheme: light;
+    }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Helvetica Neue", system-ui, -apple-system, sans-serif;
+      background: #f5f7fb;
+      color: #101322;
+    }
+    main {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+    h1 {
+      margin: 0 0 4px 0;
+      font-size: 24px;
+      letter-spacing: -0.02em;
+    }
+    p.lead {
+      margin: 0 0 14px 0;
+      color: #4a5164;
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    .panel {
+      background: #fff;
+      border: 1px solid #e3e6ef;
+      box-shadow: 0 10px 30px rgba(16, 19, 34, 0.06);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 12px;
+      font-size: 14px;
+    }
+    .controls label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .controls input[type="range"] {
+      accent-color: #1257d4;
+    }
+    .controls input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+    }
+    #chart-wrap {
+      position: relative;
+    }
+    #chart {
+      width: 100%;
+      height: 360px;
+      border: 1px solid #e3e6ef;
+      border-radius: 10px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8f9fb 100%);
+    }
+    #status {
+      font-size: 13px;
+      color: #4a5164;
+      margin-top: 6px;
+    }
+    #stats {
+      font-size: 13px;
+      color: #1f2535;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .badge {
+      background: #eef2ff;
+      color: #1b3fa0;
+      padding: 4px 8px;
+      border-radius: 6px;
+      border: 1px solid #d8def7;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .legend {
+      font-size: 13px;
+      color: #4a5164;
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .chip {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+      display: inline-block;
+      border: 1px solid rgba(0,0,0,0.06);
+    }
+    .hint {
+      margin-top: 4px;
+      font-size: 12px;
+      color: #6f7484;
+    }
+    @media (max-width: 720px) {
+      #chart {
+        height: 300px;
+      }
+      .controls {
+        gap: 10px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="panel">
+      <h1>Route Coverage Playback</h1>
+      <p class="lead">Loads <code>route_coverage_export.json</code> and renders a time-aligned profile of RTT. Use the clip to flag poor connectivity and flip to mirror a return journey.</p>
+      <div class="controls">
+        <label for="clip">Clip RTT (ms)
+          <input id="clip" type="range" min="0" max="2000" value="600" step="10" disabled>
+          <span id="clip-value" class="badge">–</span>
+        </label>
+        <label for="flip">
+          <input id="flip" type="checkbox" disabled>
+          Flip journey
+        </label>
+        <button id="reload" type="button">Reload export</button>
+      </div>
+      <div class="legend" aria-hidden="true">
+        <span><span class="chip" style="background:#1a9c6f"></span>responsive</span>
+        <span><span class="chip" style="background:#f08c42"></span>strained</span>
+        <span><span class="chip" style="background:#d7263d"></span>over clip</span>
+        <span><span class="chip" style="background:#314b9f"></span>clip line</span>
+        <span><span class="chip" style="background:#6a3dc4"></span>station stop</span>
+        <span><span class="chip" style="background:#000"></span>current location</span>
+      </div>
+      <div id="stats"></div>
+      <div id="status" role="status">Waiting for export…</div>
+    </div>
+
+    <div class="panel" id="chart-wrap">
+      <canvas id="chart" aria-label="RTT along the journey timeline"></canvas>
+      <div class="hint">Time scale starts at zero; flip mirrors the route horizontally. Station dots load from an optional stations.csv.</div>
+    </div>
+  </main>
+
+  <script>
+    (function(){
+      const chart = document.getElementById('chart');
+      const clipInput = document.getElementById('clip');
+      const clipValue = document.getElementById('clip-value');
+      const flipToggle = document.getElementById('flip');
+      const statusEl = document.getElementById('status');
+      const statsEl = document.getElementById('stats');
+      const reloadBtn = document.getElementById('reload');
+      const padding = { top: 28, right: 18, bottom: 58, left: 60 };
+      let samples = [];
+      let gpsSamples = [];
+      let meta = null;
+      let stationStops = [];
+      let currentPoint = null;
+      let stationScreenPoints = [];
+      let hoveredStop = null;
+
+      function setStatus(text){
+        statusEl.textContent = text;
+      }
+
+      function formatDuration(ms){
+        const totalSec = Math.round(ms / 1000);
+        const m = Math.floor(totalSec / 60);
+        const s = totalSec % 60;
+        if (m === 0) return `${s}s`;
+        if (m < 60) return `${m}m ${s.toString().padStart(2, "0")}s`;
+        const h = Math.floor(m / 60);
+        const remM = m % 60;
+        return `${h}h ${remM}m`;
+      }
+
+      function formatTimeLabel(ms){
+        const sec = Math.round(ms / 1000);
+        if (sec < 60) return `${sec}s`;
+        const m = Math.floor(sec / 60);
+        const remS = sec % 60;
+        return remS === 0 ? `${m}m` : `${m}m ${remS}s`;
+      }
+
+      function percentile(arr, p){
+        if (!arr.length) return 0;
+        const sorted = [...arr].sort((a, b) => a - b);
+        const idx = Math.min(sorted.length - 1, Math.floor(sorted.length * p));
+        return sorted[idx];
+      }
+
+      function pickDefaultClip(rtts, sliderMax){
+        const p80 = percentile(rtts, 0.8);
+        const fallback = 600;
+        return Math.max(150, Math.min(sliderMax, Math.round(p80 || fallback)));
+      }
+
+      function splitCsvLine(line){
+        const out = [];
+        let cur = '';
+        let inQuotes = false;
+        for (let i = 0; i < line.length; i++){
+          const ch = line[i];
+          if (ch === '"' && line[i + 1] === '"'){
+            cur += '"';
+            i++;
+            continue;
+          }
+          if (ch === '"'){
+            inQuotes = !inQuotes;
+            continue;
+          }
+          if (ch === ',' && !inQuotes){
+            out.push(cur);
+            cur = '';
+          } else {
+            cur += ch;
+          }
+        }
+        out.push(cur);
+        return out;
+      }
+
+      function parseStationsCsv(text){
+        const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+        if (lines.length === 0) throw new Error('stations.csv is empty');
+        const header = splitCsvLine(lines[0]).map(h => h.trim().toLowerCase());
+        const findIndex = (names) => header.findIndex(h => names.includes(h));
+        const latIdx = findIndex(['lat', 'latitude']);
+        const lonIdx = findIndex(['lon', 'long', 'longitude', 'lng']);
+        const nameIdx = findIndex(['station_name', 'stationname', 'name', 'station']);
+        const crsIdx = findIndex(['crs', 'crs_code', 'crscode']);
+        if (latIdx === -1 || lonIdx === -1 || nameIdx === -1) {
+          throw new Error('stations.csv missing lat/lon/name columns');
+        }
+        const rows = [];
+        for (let i = 1; i < lines.length; i++){
+          const cols = splitCsvLine(lines[i]);
+          const lat = parseFloat(cols[latIdx]);
+          const lon = parseFloat(cols[lonIdx]);
+          const name = (cols[nameIdx] || '').trim();
+          if (!name || Number.isNaN(lat) || Number.isNaN(lon)) continue;
+          const crs = crsIdx >= 0 ? (cols[crsIdx] || '').trim() : '';
+          rows.push({ name, lat, lon, crs });
+        }
+        return rows;
+      }
+
+      function distanceMeters(lat1, lon1, lat2, lon2){
+        const R = 6371000;
+        const toRad = (d) => d * Math.PI / 180;
+        const dLat = toRad(lat2 - lat1);
+        const dLon = toRad(lon2 - lon1);
+        const a = Math.sin(dLat/2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon/2) ** 2;
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+        return R * c;
+      }
+
+      function boundingBox(points){
+        if (!points.length) return null;
+        let minLat = points[0].lat, maxLat = points[0].lat;
+        let minLon = points[0].lon, maxLon = points[0].lon;
+        for (const p of points){
+          if (p.lat < minLat) minLat = p.lat;
+          if (p.lat > maxLat) maxLat = p.lat;
+          if (p.lon < minLon) minLon = p.lon;
+          if (p.lon > maxLon) maxLon = p.lon;
+        }
+        const pad = 0.25; // degrees padding to catch nearby stations
+        return {
+          minLat: minLat - pad,
+          maxLat: maxLat + pad,
+          minLon: minLon - pad,
+          maxLon: maxLon + pad
+        };
+      }
+
+      function detectStops(gps, stations){
+        if (!gps.length || !stations.length) return [];
+        const box = boundingBox(gps);
+        const candidates = stations.filter(st =>
+          st.lat >= box.minLat && st.lat <= box.maxLat &&
+          st.lon >= box.minLon && st.lon <= box.maxLon
+        );
+        if (!candidates.length) return [];
+        const seen = new Map();
+        const thresholdM = 750; // treat within 750m as a stop
+        for (const g of gps){
+          let nearest = null;
+          for (const st of candidates){
+            const d = distanceMeters(g.lat, g.lon, st.lat, st.lon);
+            if (d > thresholdM) continue;
+            if (!nearest || d < nearest.d) nearest = { st, d };
+          }
+          if (nearest){
+            const key = nearest.st.crs || nearest.st.name;
+            if (!seen.has(key)){
+              seen.set(key, { ...nearest.st, ts: g.ts, distance: nearest.d });
+            }
+          }
+        }
+        return Array.from(seen.values()).sort((a, b) => a.ts - b.ts);
+      }
+
+      async function loadStations(){
+        if (!gpsSamples.length){
+          setStatus('Loaded samples (no GPS points to place stations)');
+          return;
+        }
+        try {
+          const res = await fetch('./stations.csv');
+          if (!res.ok) {
+            setStatus('Loaded samples; stations.csv not found (add it to plot stops)');
+            return;
+          }
+          const text = await res.text();
+          const stations = parseStationsCsv(text);
+          const stops = detectStops(gpsSamples, stations);
+          stationStops = stops;
+          if (stops.length === 0){
+            setStatus('Loaded samples; no nearby stations detected');
+          } else {
+            setStatus(`Loaded samples; mapped ${stops.length} stops`);
+          }
+          draw();
+        } catch(err){
+          console.error(err);
+          setStatus(`Stations load error: ${err.message}`);
+        }
+      }
+
+      async function loadExport(){
+        setStatus('Loading route_coverage_export.json…');
+        const res = await fetch('./route_coverage_export.json');
+        if (!res.ok) throw new Error(`Failed to load export (${res.status})`);
+        const raw = await res.json();
+        const pings = raw
+          .filter(entry => entry && entry.type === 'ping' && typeof entry.rtt_ms === 'number' && entry.ts)
+          .map(entry => ({ ts: new Date(entry.ts).getTime(), rtt: entry.rtt_ms }));
+        pings.sort((a, b) => a.ts - b.ts);
+        if (pings.length === 0) throw new Error('No ping samples found in export');
+
+        gpsSamples = raw
+          .filter(entry => entry && entry.type === 'gps' && typeof entry.lat === 'number' && typeof entry.lon === 'number' && entry.ts)
+          .map(entry => ({ ts: new Date(entry.ts).getTime(), lat: entry.lat, lon: entry.lon }))
+          .sort((a, b) => a.ts - b.ts);
+        currentPoint = gpsSamples.length ? gpsSamples[gpsSamples.length - 1] : null;
+
+        const rtts = pings.map(p => p.rtt);
+        const minTs = pings[0].ts;
+        const maxTs = pings[pings.length - 1].ts;
+        const duration = Math.max(1, maxTs - minTs);
+        const maxRtt = Math.max(...rtts);
+
+        const suggestedMax = Math.ceil(Math.max(1000, maxRtt + 100) / 100) * 100;
+        clipInput.max = suggestedMax;
+        clipInput.value = pickDefaultClip(rtts, suggestedMax);
+        clipInput.disabled = false;
+        flipToggle.disabled = false;
+
+        samples = pings;
+        meta = { minTs, maxTs, duration, maxRtt };
+        setStatus(`Loaded ${pings.length} ping samples over ${formatDuration(duration)} (finding stops…)`);
+        renderStats();
+        updateClipLabel();
+        draw();
+        loadStations();
+      }
+
+      function renderStats(){
+        if (!meta) return;
+        const startDate = new Date(meta.minTs);
+        const endDate = new Date(meta.maxTs);
+        statsEl.innerHTML = '';
+        const parts = [
+          `Start ${startDate.toLocaleString()}`,
+          `End ${endDate.toLocaleString()}`,
+          `Duration ${formatDuration(meta.duration)}`,
+          `Max RTT ${Math.round(meta.maxRtt)} ms`,
+          `Samples ${samples.length}`
+        ];
+        parts.forEach(text => {
+          const span = document.createElement('span');
+          span.className = 'badge';
+          span.textContent = text;
+          statsEl.appendChild(span);
+        });
+      }
+
+      function updateClipLabel(){
+        clipValue.textContent = `${clipInput.value} ms`;
+      }
+
+      function chooseTick(durationMs, targetCount){
+        const sec = durationMs / 1000;
+        const candidates = [10, 20, 30, 60, 120, 180, 300, 600, 900, 1200, 1800];
+        for (const c of candidates){
+          if (sec / c <= targetCount) return c * 1000;
+        }
+        return 3600 * 1000; // one hour
+      }
+
+      function colourFor(rtt, clip){
+        if (rtt >= clip) return '#d7263d';
+        const ratio = Math.min(1, rtt / clip);
+        const hue = 150 - ratio * 70; // green to orange
+        const light = 36 + ratio * 10;
+        return `hsl(${hue},70%,${light}%)`;
+      }
+
+      function segmentColour(a, b, clip){
+        if (a >= clip && b >= clip) return '#d7263d';
+        if (a >= clip || b >= clip) return '#f05d5e';
+        return colourFor((a + b) / 2, clip);
+      }
+
+      function resizeCanvas(){
+        const rect = chart.getBoundingClientRect();
+        const width = rect.width || 800;
+        const height = rect.height || 360;
+        const dpr = window.devicePixelRatio || 1;
+        chart.width = width * dpr;
+        chart.height = height * dpr;
+        const ctx = chart.getContext('2d');
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.scale(dpr, dpr);
+        return { ctx, width, height };
+      }
+
+      function draw(){
+        if (!meta || samples.length === 0) return;
+        const clip = Number(clipInput.value);
+        const flipped = flipToggle.checked;
+        const { ctx, width, height } = resizeCanvas();
+        ctx.clearRect(0, 0, width, height);
+
+        const plotW = width - padding.left - padding.right;
+        const plotH = height - padding.top - padding.bottom;
+        const yMax = Math.max(meta.maxRtt, clip) * 1.05;
+        stationScreenPoints = [];
+
+        const mapX = (ts) => {
+          const clampedTs = Math.max(meta.minTs, Math.min(ts, meta.maxTs));
+          const offset = clampedTs - meta.minTs;
+          const aligned = flipped ? meta.duration - offset : offset;
+          return padding.left + (aligned / meta.duration) * plotW;
+        };
+        const mapY = (rtt) => {
+          const clamped = Math.min(rtt, yMax);
+          const ratio = clamped / yMax;
+          return padding.top + (1 - ratio) * plotH;
+        };
+
+        // Axes and baseline
+        ctx.strokeStyle = '#c9ced8';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const baseY = height - padding.bottom;
+        ctx.moveTo(padding.left, baseY);
+        ctx.lineTo(width - padding.right, baseY);
+        ctx.stroke();
+
+        const tickEvery = chooseTick(meta.duration, Math.max(5, Math.floor(plotW / 120)));
+        ctx.fillStyle = '#4a5164';
+        ctx.font = '12px "Segoe UI", "Helvetica Neue", system-ui';
+        for (let t = 0; t <= meta.duration + 1; t += tickEvery){
+          const x = padding.left + ((flipped ? meta.duration - t : t) / meta.duration) * plotW;
+          ctx.beginPath();
+          ctx.moveTo(x, baseY);
+          ctx.lineTo(x, baseY + 6);
+          ctx.strokeStyle = '#c9ced8';
+          ctx.stroke();
+          ctx.fillText(formatTimeLabel(t), x - 8, baseY + 18);
+        }
+
+        // Clip line
+        const clipY = mapY(clip);
+        ctx.strokeStyle = '#314b9f';
+        ctx.setLineDash([5, 4]);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, clipY);
+        ctx.lineTo(width - padding.right, clipY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#314b9f';
+        ctx.fillText(`clip ${clip} ms`, padding.left + 6, clipY - 6);
+
+        // Station stops
+        if (stationStops.length){
+          const showNames = stationStops.length <= 12;
+          ctx.fillStyle = '#6a3dc4';
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1.2;
+          stationStops.forEach(stop => {
+            const x = mapX(stop.ts);
+            const y = baseY - 8;
+            ctx.beginPath();
+            ctx.arc(x, y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            stationScreenPoints.push({ x, y, name: stop.name });
+            if (showNames){
+              ctx.fillStyle = '#2b1f4f';
+              ctx.fillText(stop.name, x + 6, baseY - 12);
+              ctx.fillStyle = '#6a3dc4';
+            }
+          });
+        }
+
+        // RTT polyline
+        ctx.lineWidth = 2;
+        let prev = null;
+        for (const s of samples){
+          const x = mapX(s.ts);
+          const y = mapY(s.rtt);
+          if (prev){
+            ctx.strokeStyle = segmentColour(prev.rtt, s.rtt, clip);
+            ctx.beginPath();
+            ctx.moveTo(prev.x, prev.y);
+            ctx.lineTo(x, y);
+            ctx.stroke();
+          }
+          prev = { x, y, rtt: s.rtt };
+        }
+
+        // Start/end markers
+        const startX = mapX(samples[0].ts);
+        const endX = mapX(samples[samples.length - 1].ts);
+        ctx.fillStyle = '#101322';
+        ctx.beginPath();
+        ctx.arc(startX, baseY + 10, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(endX, baseY + 10, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Current location marker (last GPS point)
+        if (currentPoint){
+          const x = mapX(currentPoint.ts);
+          ctx.fillStyle = '#111';
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.arc(x, baseY - 22, 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = '#111';
+          ctx.fillText('current', x - 20, baseY - 32);
+        }
+
+        // Hovered station label (rotated vertical)
+        if (hoveredStop){
+          ctx.save();
+          ctx.translate(hoveredStop.x, hoveredStop.y - 12);
+          ctx.rotate(-Math.PI / 2);
+          ctx.fillStyle = '#111';
+          ctx.font = '12px "Segoe UI", "Helvetica Neue", system-ui';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(hoveredStop.name, 0, 0);
+          ctx.restore();
+        }
+      }
+
+      clipInput.addEventListener('input', () => {
+        updateClipLabel();
+        draw();
+      });
+
+      flipToggle.addEventListener('change', () => {
+        draw();
+      });
+
+      reloadBtn.addEventListener('click', () => {
+        loadExport().catch(err => setStatus(err.message));
+      });
+
+      chart.addEventListener('mousemove', (ev) => {
+        if (!stationScreenPoints.length) return;
+        const rect = chart.getBoundingClientRect();
+        const x = ev.clientX - rect.left;
+        const y = ev.clientY - rect.top;
+        const hitRadius = 10;
+        let hit = null;
+        for (const pt of stationScreenPoints){
+          const dx = pt.x - x;
+          const dy = pt.y - y;
+          if (Math.sqrt(dx*dx + dy*dy) <= hitRadius){
+            hit = pt;
+            break;
+          }
+        }
+        const changed = (!!hit && (!hoveredStop || hoveredStop.name !== hit.name || hoveredStop.x !== hit.x)) ||
+                        (!hit && hoveredStop);
+        if (changed){
+          hoveredStop = hit;
+          draw();
+        }
+      });
+
+      chart.addEventListener('mouseleave', () => {
+        if (hoveredStop){
+          hoveredStop = null;
+          draw();
+        }
+      });
+
+      window.addEventListener('resize', () => {
+        draw();
+      });
+
+      loadExport().catch(err => setStatus(err.message));
+    })();
+  </script>
+</body>
+</html>
