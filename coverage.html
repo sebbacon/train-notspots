@@ -113,6 +113,12 @@
       font-size: 12px;
       color: #6f7484;
     }
+    #summary {
+      margin-top: 8px;
+      font-size: 14px;
+      color: #1f2535;
+      line-height: 1.4;
+    }
     @media (max-width: 720px) {
       #chart {
         height: 300px;
@@ -150,6 +156,7 @@
       </div>
       <div id="stats"></div>
       <div id="status" role="status">Waiting for export…</div>
+      <div id="summary"></div>
     </div>
 
     <div class="panel" id="chart-wrap">
@@ -167,6 +174,7 @@
       const flipToggle = document.getElementById('flip');
       const statusEl = document.getElementById('status');
       const statsEl = document.getElementById('stats');
+      const summaryEl = document.getElementById('summary');
       const reloadBtn = document.getElementById('reload');
       const padding = { top: 28, right: 18, bottom: 58, left: 60 };
       let samples = [];
@@ -211,6 +219,54 @@
         const p80 = percentile(rtts, 0.8);
         const fallback = 600;
         return Math.max(150, Math.min(sliderMax, Math.round(p80 || fallback)));
+      }
+
+      function journeyCoverage(clip){
+        if (!meta || samples.length < 2) return null;
+        let underMs = 0;
+        for (let i = 1; i < samples.length; i++){
+          const dt = samples[i].ts - samples[i - 1].ts;
+          if (samples[i - 1].rtt < clip) underMs += dt;
+        }
+        const proportion = meta.duration ? underMs / meta.duration : 0;
+        return { underMs, proportion };
+      }
+
+      function nextChangeFromCurrent(clip){
+        if (!meta || samples.length === 0) return null;
+        const currentTs = currentPoint ? currentPoint.ts : samples[samples.length - 1].ts;
+        let idx = samples.findIndex(s => s.ts >= currentTs);
+        if (idx === -1) idx = samples.length - 1;
+        let currentState = samples[idx].rtt < clip;
+        for (let i = idx + 1; i < samples.length; i++){
+          const state = samples[i].rtt < clip;
+          if (state !== currentState){
+            const deltaMs = samples[i].ts - samples[idx].ts;
+            return { deltaMs, toAvailable: state, currentAvailable: currentState };
+          }
+        }
+        return { deltaMs: null, toAvailable: currentState, currentAvailable: currentState };
+      }
+
+      function minutesFmt(ms){
+        return (ms / 60000).toFixed(1);
+      }
+
+      function updateSummary(clip){
+        if (!meta || !samples.length){
+          summaryEl.textContent = '';
+          return;
+        }
+        const cov = journeyCoverage(clip);
+        const change = nextChangeFromCurrent(clip);
+        let changeText = 'at end of journey';
+        if (change && change.deltaMs !== null){
+          const mins = minutesFmt(change.deltaMs);
+          changeText = change.currentAvailable
+            ? `${mins} min to next outage`
+            : `${mins} min to next availability`;
+        }
+        summaryEl.textContent = `Under clip: ${minutesFmt(cov.underMs)} min (${Math.round(cov.proportion * 1000)/10}% of journey). Next change: ${changeText}.`;
       }
 
       function syncClip(newVal){
@@ -420,6 +476,7 @@
       function updateClipLabel(){
         clipValue.textContent = `${clipInput.value} ms`;
         clipNumber.value = clipInput.value;
+        updateSummary(Number(clipInput.value));
       }
 
       function chooseTick(durationMs, targetCount){
