@@ -133,6 +133,7 @@
           <input id="clip" type="range" min="0" max="2000" value="600" step="10" disabled>
           <span id="clip-value" class="badge">–</span>
         </label>
+        <input id="clip-number" type="number" min="0" value="600" step="10" disabled style="width:96px;padding:4px 6px;border:1px solid #d6dce8;border-radius:6px;font-size:14px">
         <label for="flip">
           <input id="flip" type="checkbox" disabled>
           Flip journey
@@ -161,6 +162,7 @@
     (function(){
       const chart = document.getElementById('chart');
       const clipInput = document.getElementById('clip');
+      const clipNumber = document.getElementById('clip-number');
       const clipValue = document.getElementById('clip-value');
       const flipToggle = document.getElementById('flip');
       const statusEl = document.getElementById('status');
@@ -209,6 +211,18 @@
         const p80 = percentile(rtts, 0.8);
         const fallback = 600;
         return Math.max(150, Math.min(sliderMax, Math.round(p80 || fallback)));
+      }
+
+      function syncClip(newVal){
+        if (Number.isNaN(newVal)) return;
+        const max = Math.max(Number(clipInput.max), newVal);
+        clipInput.max = max;
+        clipNumber.max = max;
+        const clamped = Math.min(max, Math.max(0, newVal));
+        clipInput.value = clamped;
+        clipNumber.value = clamped;
+        updateClipLabel();
+        draw();
       }
 
       function splitCsvLine(line){
@@ -370,16 +384,16 @@
 
         const suggestedMax = Math.ceil(Math.max(1000, maxRtt + 100) / 100) * 100;
         clipInput.max = suggestedMax;
-        clipInput.value = pickDefaultClip(rtts, suggestedMax);
+        clipNumber.max = suggestedMax;
         clipInput.disabled = false;
+        clipNumber.disabled = false;
         flipToggle.disabled = false;
 
         samples = pings;
         meta = { minTs, maxTs, duration, maxRtt };
         setStatus(`Loaded ${pings.length} ping samples over ${formatDuration(duration)} (finding stops…)`);
         renderStats();
-        updateClipLabel();
-        draw();
+        syncClip(pickDefaultClip(rtts, suggestedMax));
         loadStations();
       }
 
@@ -405,6 +419,7 @@
 
       function updateClipLabel(){
         clipValue.textContent = `${clipInput.value} ms`;
+        clipNumber.value = clipInput.value;
       }
 
       function chooseTick(durationMs, targetCount){
@@ -632,8 +647,7 @@
       }
 
       clipInput.addEventListener('input', () => {
-        updateClipLabel();
-        draw();
+        syncClip(Number(clipInput.value));
       });
 
       flipToggle.addEventListener('change', () => {
@@ -672,6 +686,10 @@
           hoveredStop = null;
           draw();
         }
+      });
+
+      clipNumber.addEventListener('input', () => {
+        syncClip(Number(clipNumber.value));
       });
 
       window.addEventListener('resize', () => {
