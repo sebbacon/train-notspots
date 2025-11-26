@@ -167,7 +167,8 @@
       const statsEl = document.getElementById('stats');
       const reloadBtn = document.getElementById('reload');
       const padding = { top: 28, right: 18, bottom: 58, left: 60 };
-      const trainIcon = '🚆';
+      // Use emoji with variation selector so canvas renders a colour glyph instead of monochrome fallback.
+      const trainIcon = '🚆\uFE0F';
       let samples = [];
       let gpsSamples = [];
       let meta = null;
@@ -554,7 +555,7 @@
         // Current location marker (last GPS point)
         if (currentPoint){
           const x = mapX(currentPoint.ts);
-          ctx.font = '20px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji"';
+          ctx.font = '22px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","sans-serif"';
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillText(trainIcon, x, baseY - 20);
