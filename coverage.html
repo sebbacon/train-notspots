@@ -167,6 +167,7 @@
       const statsEl = document.getElementById('stats');
       const reloadBtn = document.getElementById('reload');
       const padding = { top: 28, right: 18, bottom: 58, left: 60 };
+      const trainIcon = '🚆';
       let samples = [];
       let gpsSamples = [];
       let meta = null;
@@ -553,15 +554,15 @@
         // Current location marker (last GPS point)
         if (currentPoint){
           const x = mapX(currentPoint.ts);
+          ctx.font = '20px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji"';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(trainIcon, x, baseY - 20);
+          ctx.font = '12px "Segoe UI", "Helvetica Neue", system-ui';
           ctx.fillStyle = '#111';
-          ctx.strokeStyle = '#fff';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.arc(x, baseY - 22, 6, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = '#111';
-          ctx.fillText('current', x - 20, baseY - 32);
+          ctx.fillText('current', x, baseY - 34);
+          ctx.textAlign = 'start';
+          ctx.textBaseline = 'alphabetic';
         }
 
         // Hovered station label (rotated vertical)
