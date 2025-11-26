@@ -509,6 +509,28 @@
         ctx.lineTo(width - padding.right, baseY);
         ctx.stroke();
 
+        // Y axis with ticks
+        ctx.beginPath();
+        ctx.moveTo(padding.left, padding.top);
+        ctx.lineTo(padding.left, baseY);
+        ctx.stroke();
+        ctx.save();
+        ctx.strokeStyle = '#c9ced8';
+        ctx.fillStyle = '#4a5164';
+        ctx.font = '12px "Segoe UI", "Helvetica Neue", system-ui';
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        const yTicks = [0, Math.round(clip / 2), clip];
+        yTicks.forEach(val => {
+          const y = mapY(val);
+          ctx.beginPath();
+          ctx.moveTo(padding.left - 6, y);
+          ctx.lineTo(padding.left, y);
+          ctx.stroke();
+          ctx.fillText(`${Math.round(val)} ms`, padding.left - 8, y);
+        });
+        ctx.restore();
+
         const tickEvery = chooseTick(meta.duration, Math.max(5, Math.floor(plotW / 120)));
         ctx.fillStyle = '#4a5164';
         ctx.font = '12px "Segoe UI", "Helvetica Neue", system-ui';
