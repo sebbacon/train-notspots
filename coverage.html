@@ -234,8 +234,9 @@
 
       function nextChangeFromCurrent(clip){
         if (!meta || samples.length === 0) return null;
-        const currentTs = currentPoint ? currentPoint.ts : samples[samples.length - 1].ts;
-        let idx = samples.findIndex(s => s.ts >= currentTs);
+        const rawTs = currentPoint ? currentPoint.ts : samples[samples.length - 1].ts;
+        const clampedTs = Math.min(Math.max(rawTs, samples[0].ts), samples[samples.length - 1].ts);
+        let idx = samples.findIndex(s => s.ts >= clampedTs);
         if (idx === -1) idx = samples.length - 1;
         let currentState = samples[idx].rtt < clip;
         for (let i = idx + 1; i < samples.length; i++){
@@ -259,7 +260,7 @@
         }
         const cov = journeyCoverage(clip);
         const change = nextChangeFromCurrent(clip);
-        let changeText = 'at end of journey';
+        let changeText = 'No further change (end of journey)';
         if (change && change.deltaMs !== null){
           const mins = minutesFmt(change.deltaMs);
           changeText = change.currentAvailable
