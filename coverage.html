@@ -636,14 +636,14 @@
         const yMax = clip * 1.1; // keep clip near the top, suppressing above-clip drawing
         stationScreenPoints = [];
 
-        const domainMin = flipped ? -meta.maxOffset : meta.minOffset;
-        const domainMax = flipped ? -meta.minOffset : meta.maxOffset;
+        const domainMin = flipped ? meta.minOffset : 0;
+        const domainMax = flipped ? 0 : Math.abs(meta.minOffset);
         const domainSpan = Math.max(1, domainMax - domainMin);
 
         const mapX = (ts) => {
           const clampedTs = Math.max(meta.minTs, Math.min(ts, meta.maxTs));
           const offset = clampedTs - meta.baseTs;
-          const aligned = flipped ? -offset : offset;
+          const aligned = flipped ? offset : -offset;
           return padding.left + ((aligned - domainMin) / domainSpan) * plotW;
         };
         const mapY = (rtt) => {
