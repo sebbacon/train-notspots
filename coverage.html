@@ -239,14 +239,26 @@
         let idx = samples.findIndex(s => s.ts >= clampedTs);
         if (idx === -1) idx = samples.length - 1;
         let currentState = samples[idx].rtt < clip;
+        let changeIdx = null;
         for (let i = idx + 1; i < samples.length; i++){
           const state = samples[i].rtt < clip;
           if (state !== currentState){
             const deltaMs = samples[i].ts - samples[idx].ts;
-            return { deltaMs, toAvailable: state, currentAvailable: currentState };
+            changeIdx = i;
+            return {
+              deltaMs,
+              toAvailable: state,
+              currentAvailable: currentState,
+              diag: { rawTs, clampedTs, idx, currentSampleTs: samples[idx].ts, changeIdx, changeTs: samples[i].ts, clip }
+            };
           }
         }
-        return { deltaMs: null, toAvailable: currentState, currentAvailable: currentState };
+        return {
+          deltaMs: null,
+          toAvailable: currentState,
+          currentAvailable: currentState,
+          diag: { rawTs, clampedTs, idx, currentSampleTs: samples[idx].ts, changeIdx: null, changeTs: null, clip }
+        };
       }
 
       function minutesFmt(ms){
@@ -268,6 +280,20 @@
             : `${mins} min to next availability`;
         }
         summaryEl.textContent = `Under clip: ${minutesFmt(cov.underMs)} min (${Math.round(cov.proportion * 1000)/10}% of journey). Next change: ${changeText}.`;
+        if (change && change.diag){
+          console.log('[coverage] next change diag', {
+            clip,
+            currentTsRaw: change.diag.rawTs,
+            currentTsClamped: change.diag.clampedTs,
+            sampleIndex: change.diag.idx,
+            sampleTs: change.diag.currentSampleTs,
+            changeIndex: change.diag.changeIdx,
+            changeTs: change.diag.changeTs,
+            deltaMs: change.deltaMs,
+            currentAvailable: change.currentAvailable,
+            toAvailable: change.toAvailable
+          });
+        }
       }
 
       function syncClip(newVal){
