@@ -310,6 +310,7 @@
         if (change && change.diag){
           console.log('[coverage] next change diag', {
             clip,
+            flipped: flipToggle.checked,
             currentTsRaw: change.diag.rawTs,
             currentTsClamped: change.diag.clampedTs,
             sampleIndex: change.diag.idx,
@@ -765,6 +766,7 @@
       });
 
       flipToggle.addEventListener('change', () => {
+        updateSummary(Number(clipInput.value));
         draw();
       });
 
