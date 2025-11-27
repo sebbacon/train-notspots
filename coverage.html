@@ -232,7 +232,7 @@
         return { underMs, proportion };
       }
 
-      function nextChangeFromCurrent(clip){
+      function nextChangeFromCurrent(clip, flipped){
         if (!meta || samples.length === 0) return null;
         const rawTs = currentPoint ? currentPoint.ts : samples[samples.length - 1].ts;
         const clampedTs = Math.min(Math.max(rawTs, samples[0].ts), samples[samples.length - 1].ts);
@@ -240,24 +240,48 @@
         if (idx === -1) idx = samples.length - 1;
         let currentState = samples[idx].rtt < clip;
         let changeIdx = null;
-        for (let i = idx + 1; i < samples.length; i++){
+        let prevChangeIdx = null;
+        for (let i = idx - 1; i >= 0; i--){
           const state = samples[i].rtt < clip;
           if (state !== currentState){
-            const deltaMs = samples[i].ts - samples[idx].ts;
-            changeIdx = i;
-            return {
-              deltaMs,
-              toAvailable: state,
-              currentAvailable: currentState,
-              diag: { rawTs, clampedTs, idx, currentSampleTs: samples[idx].ts, changeIdx, changeTs: samples[i].ts, clip }
-            };
+            prevChangeIdx = i;
+            break;
+          }
+        }
+        if (!flipped){
+          for (let i = idx + 1; i < samples.length; i++){
+            const state = samples[i].rtt < clip;
+            if (state !== currentState){
+              const deltaMs = samples[i].ts - samples[idx].ts;
+              changeIdx = i;
+              return {
+                deltaMs,
+                toAvailable: state,
+                currentAvailable: currentState,
+                diag: { rawTs, clampedTs, idx, currentSampleTs: samples[idx].ts, changeIdx, changeTs: samples[i].ts, clip, direction: 'forward', prevChangeIdx, prevChangeTs: prevChangeIdx!=null ? samples[prevChangeIdx].ts : null }
+              };
+            }
+          }
+        } else {
+          for (let i = idx - 1; i >= 0; i--){
+            const state = samples[i].rtt < clip;
+            if (state !== currentState){
+              const deltaMs = samples[idx].ts - samples[i].ts;
+              changeIdx = i;
+              return {
+                deltaMs,
+                toAvailable: state,
+                currentAvailable: currentState,
+                diag: { rawTs, clampedTs, idx, currentSampleTs: samples[idx].ts, changeIdx, changeTs: samples[i].ts, clip, direction: 'reverse', prevChangeIdx, prevChangeTs: prevChangeIdx!=null ? samples[prevChangeIdx].ts : null }
+              };
+            }
           }
         }
         return {
           deltaMs: null,
           toAvailable: currentState,
           currentAvailable: currentState,
-          diag: { rawTs, clampedTs, idx, currentSampleTs: samples[idx].ts, changeIdx: null, changeTs: null, clip }
+          diag: { rawTs, clampedTs, idx, currentSampleTs: samples[idx].ts, changeIdx: null, changeTs: null, clip, direction: flipped ? 'reverse' : 'forward', prevChangeIdx, prevChangeTs: prevChangeIdx!=null ? samples[prevChangeIdx].ts : null }
         };
       }
 
@@ -271,13 +295,16 @@
           return;
         }
         const cov = journeyCoverage(clip);
-        const change = nextChangeFromCurrent(clip);
+        const change = nextChangeFromCurrent(clip, flipToggle.checked);
         let changeText = 'No further change (end of journey)';
         if (change && change.deltaMs !== null){
           const mins = minutesFmt(change.deltaMs);
           changeText = change.currentAvailable
             ? `${mins} min to next outage`
             : `${mins} min to next availability`;
+        } else if (change && change.diag && change.diag.prevChangeIdx != null){
+          const minsAgo = minutesFmt(samples[change.diag.idx].ts - samples[change.diag.prevChangeIdx].ts);
+          changeText = `No further change; last change ${minsAgo} min ago`;
         }
         summaryEl.textContent = `Under clip: ${minutesFmt(cov.underMs)} min (${Math.round(cov.proportion * 1000)/10}% of journey). Next change: ${changeText}.`;
         if (change && change.diag){
@@ -291,7 +318,10 @@
             changeTs: change.diag.changeTs,
             deltaMs: change.deltaMs,
             currentAvailable: change.currentAvailable,
-            toAvailable: change.toAvailable
+            toAvailable: change.toAvailable,
+            prevChangeIdx: change.diag.prevChangeIdx,
+            prevChangeTs: change.diag.prevChangeTs,
+            direction: change.diag.direction
           });
         }
       }
