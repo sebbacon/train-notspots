@@ -184,6 +184,7 @@
       let currentPoint = null;
       let stationScreenPoints = [];
       let hoveredStop = null;
+      let changeMarker = null;
 
       function setStatus(text){
         statusEl.textContent = text;
@@ -292,19 +293,31 @@
       function updateSummary(clip){
         if (!meta || !samples.length){
           summaryEl.textContent = '';
+          changeMarker = null;
           return;
         }
         const cov = journeyCoverage(clip);
         const change = nextChangeFromCurrent(clip, flipToggle.checked);
+        changeMarker = null;
         let changeText = 'No further change (end of journey)';
         if (change && change.deltaMs !== null){
           const mins = minutesFmt(change.deltaMs);
           changeText = change.currentAvailable
             ? `${mins} min to next outage`
             : `${mins} min to next availability`;
+          changeMarker = {
+            ts: change.diag.changeTs,
+            label: change.currentAvailable ? 'next outage' : 'next availability',
+            color: change.currentAvailable ? '#d7263d' : '#1a9c6f'
+          };
         } else if (change && change.diag && change.diag.prevChangeIdx != null){
           const minsAgo = minutesFmt(samples[change.diag.idx].ts - samples[change.diag.prevChangeIdx].ts);
           changeText = `No further change; last change ${minsAgo} min ago`;
+          changeMarker = {
+            ts: change.diag.prevChangeTs,
+            label: 'last change',
+            color: '#555'
+          };
         }
         summaryEl.textContent = `Under clip: ${minutesFmt(cov.underMs)} min (${Math.round(cov.proportion * 1000)/10}% of journey). Next change: ${changeText}.`;
         if (change && change.diag){
@@ -684,7 +697,23 @@
         ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = '#314b9f';
-        ctx.fillText(`clip ${clip} ms`, padding.left + 6, clipY - 6);
+          ctx.fillText(`clip ${clip} ms`, padding.left + 6, clipY - 6);
+
+        // Next/last change marker
+        if (changeMarker && changeMarker.ts != null){
+          const x = mapX(changeMarker.ts);
+          ctx.strokeStyle = changeMarker.color || '#555';
+          ctx.setLineDash([3, 3]);
+          ctx.beginPath();
+          ctx.moveTo(x, padding.top);
+          ctx.lineTo(x, baseY);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = changeMarker.color || '#555';
+          ctx.textAlign = 'center';
+          ctx.fillText(changeMarker.label, x, padding.top + 12);
+          ctx.textAlign = 'start';
+        }
 
         // Station stops
         if (stationStops.length){
