@@ -202,11 +202,13 @@
       }
 
       function formatTimeLabel(ms){
-        const sec = Math.round(ms / 1000);
-        if (sec < 60) return `${sec}s`;
+        const sec = Math.round(Math.abs(ms) / 1000);
+        const sign = ms < 0 ? '-' : '';
+        if (sec < 60) return `${sign}${sec}s`;
         const m = Math.floor(sec / 60);
         const remS = sec % 60;
-        return remS === 0 ? `${m}m` : `${m}m ${remS}s`;
+        const body = remS === 0 ? `${m}m` : `${m}m ${remS}s`;
+        return `${sign}${body}`;
       }
 
       function percentile(arr, p){
@@ -517,7 +519,10 @@
         flipToggle.disabled = false;
 
         samples = pings;
-        meta = { minTs, maxTs, duration, maxRtt };
+        const baseTs = currentPoint ? currentPoint.ts : maxTs;
+        const minOffset = minTs - baseTs;
+        const maxOffset = maxTs - baseTs;
+        meta = { minTs, maxTs, duration, maxRtt, baseTs, minOffset, maxOffset };
         setStatus(`Loaded ${pings.length} ping samples over ${formatDuration(duration)} (finding stops…)`);
         renderStats();
         syncClip(pickDefaultClip(rtts, suggestedMax));
@@ -631,11 +636,15 @@
         const yMax = clip * 1.1; // keep clip near the top, suppressing above-clip drawing
         stationScreenPoints = [];
 
+        const domainMin = flipped ? -meta.maxOffset : meta.minOffset;
+        const domainMax = flipped ? -meta.minOffset : meta.maxOffset;
+        const domainSpan = Math.max(1, domainMax - domainMin);
+
         const mapX = (ts) => {
           const clampedTs = Math.max(meta.minTs, Math.min(ts, meta.maxTs));
-          const offset = clampedTs - meta.minTs;
-          const aligned = flipped ? meta.duration - offset : offset;
-          return padding.left + (aligned / meta.duration) * plotW;
+          const offset = clampedTs - meta.baseTs;
+          const aligned = flipped ? -offset : offset;
+          return padding.left + ((aligned - domainMin) / domainSpan) * plotW;
         };
         const mapY = (rtt) => {
           const clamped = Math.min(rtt, clip);
@@ -674,17 +683,17 @@
         });
         ctx.restore();
 
-        const tickEvery = chooseTick(meta.duration, Math.max(5, Math.floor(plotW / 120)));
+        const tickEvery = chooseTick(Math.abs(domainMax - domainMin), Math.max(5, Math.floor(plotW / 120)));
         ctx.fillStyle = '#4a5164';
         ctx.font = '12px "Segoe UI", "Helvetica Neue", system-ui';
-        for (let t = 0; t <= meta.duration + 1; t += tickEvery){
-          const x = padding.left + ((flipped ? meta.duration - t : t) / meta.duration) * plotW;
+        for (let t = Math.floor(domainMin / tickEvery) * tickEvery; t <= domainMax + 1; t += tickEvery){
+          const x = padding.left + ((t - domainMin) / domainSpan) * plotW;
           ctx.beginPath();
           ctx.moveTo(x, baseY);
           ctx.lineTo(x, baseY + 6);
           ctx.strokeStyle = '#c9ced8';
           ctx.stroke();
-          ctx.fillText(formatTimeLabel(t), x - 8, baseY + 18);
+          ctx.fillText(formatTimeLabel(t), x - 12, baseY + 18);
         }
 
         // Clip line
